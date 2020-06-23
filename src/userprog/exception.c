@@ -163,47 +163,24 @@ page_fault (struct intr_frame *f)
   if(not_present)
   {  
     struct vm_entry * ve1 =  find_vme(fault_addr);  
-     
      if(ve1) 
-     { 
-        if(handle_mm_fault(ve1))
-        ve1->is_loaded = true;
-        else
-        {
+     {   
+        if(!handle_mm_fault(ve1))
          exit(-1);                   
-        }
      } 
-     
      else
-      {
-       if((fault_addr<=0xc0000000)&&(fault_addr>0xbf800000)&&(uint32_t)f->esp-(uint32_t)fault_addr<=(32) )
-        {  
-           if(expand_stack(fault_addr))
-           { ve1 = find_vme(fault_addr);
-             if(handle_mm_fault(ve1))
-             ve1->is_loaded = true;
-             else
-             exit(-1);
-           }
-           else
-           {
-              exit(-1);
-           }
+      { 
+       if((fault_addr<=0xc0000000)&&(fault_addr>0xbf800000)&&((void*)((uintptr_t)f->esp-32)<=fault_addr))
+        { 
+           if(!expand_stack(fault_addr))
+            exit(-1);
         }
         else
-        {
-          
-          printf("hererererer!!!\n");
-          printf("\npage fault : %p\n",fault_addr);
           exit(-1);
-        }
       }  
    }
-
    else
- {  
     exit(-1);
- }
+
 }
  
-

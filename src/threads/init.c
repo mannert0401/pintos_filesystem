@@ -87,7 +87,6 @@ main (void)
   /* Break command line into arguments and parse options. */
   argv = read_command_line ();
   argv = parse_options (argv);
-
   /* Initialize ourselves as a thread so we can use locks,
      then enable console locking. */
   thread_init ();
@@ -101,7 +100,7 @@ main (void)
   palloc_init (user_page_limit);
   malloc_init ();
   paging_init ();
-
+ 
   /* Segmentation. */
 #ifdef USERPROG
   tss_init ();
@@ -117,17 +116,21 @@ main (void)
   exception_init ();
   syscall_init ();
 #endif
- 
-  lru_list_init();
-  swap_init();
 
   /* Start thread scheduler and enable interrupts. */
   thread_start ();
   serial_init_queue ();
   timer_calibrate ();
 
+#ifdef VM 
+  lru_list_init();
+  swap_init();
+#endif
+ 
+
 #ifdef FILESYS
   /* Initialize file system. */
+  bc_init();
   ide_init ();
   locate_block_devices ();
   filesys_init (format_filesys);

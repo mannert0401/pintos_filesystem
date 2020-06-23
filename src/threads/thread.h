@@ -113,8 +113,11 @@ struct thread
     struct list_elem child_elem;
     struct thread * parent;
     struct file * fdt[128];
-    int next_fd;
+    bool * bm_fdt[128];
     struct file * run_file;
+
+    //현재 thread의 directory를 나타내는 pointer입니다.
+    struct dir * cur_dir;   
 
     /* Owned by thread.c. */
     unsigned magic;                     /* Detects stack overflow. */

@@ -173,26 +173,40 @@ int process_add_file (struct file *f)
   if(f==NULL)
   return -1;
   struct thread * t1=thread_current();
-  t1->fdt[t1->next_fd]=f;
-  t1->next_fd++;
-  return(t1->next_fd-1);
+  int i;
+  for(i=2; i<128; i++)
+  {
+   if(t1->bm_fdt[i]==false)
+    break;  
+  }
+   
+  if(i == 128)
+  return -1;
+
+  t1->fdt[i] = f;
+  t1->bm_fdt[i] = true;
+  return i;
+
 }
 
 struct file * process_get_file(int fd)
 { 
   struct thread * t1=thread_current();
-  if(fd<=1||t1->next_fd<=fd)
-  return NULL;
+  if(t1->bm_fdt[fd]==false)
+  {
+   return NULL;
+  }
   return (t1->fdt[fd]);
 }
 
 void process_close_file(int fd)
 {
  struct thread * t1 = thread_current();
- if(fd<=1||t1->next_fd<=fd)
+ if(t1->bm_fdt[fd]==false||fd==0||fd==1)
  return;
  file_close(t1->fdt[fd]);
  t1->fdt[fd]=NULL;
+ t1->bm_fdt[fd] = false;
 }
 
 /* Waits for thread TID to die and returns its exit status.  If
@@ -228,11 +242,9 @@ process_exit (void)
 { 
   struct thread *cur = thread_current ();
   uint32_t *pd;
-  int cur_fd=cur->next_fd-1;
+  
   int i;
-   
-
-   for(i=cur_fd; i>1; i--)
+   for(i=2; i<128; i++)
    process_close_file(i); 
   
   while(!list_empty(&cur->mmap_list))
@@ -243,7 +255,11 @@ process_exit (void)
   }  
  
   vm_destroy (&cur->vm);
-  
+
+
+  //process가 종료될 때 해당 process의 root directory도 삭제하도록 합니다.  
+  dir_close(cur->cur_dir); 
+
   /* Destroy the current process's page directory and switch back
      to the kernel-only page directory. */  
   pd = cur->pagedir;
@@ -370,6 +386,7 @@ load (const char *file_name, void (**eip) (void), void **esp)
   /* Open executable file. */
   lock_acquire(&filesys_lock);  
   file = filesys_open (file_name);
+  
   if (file == NULL) 
     { 
       lock_release(&filesys_lock);
@@ -538,6 +555,7 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
   ASSERT (pg_ofs (upage) == 0);
   ASSERT (ofs % PGSIZE == 0);
 
+ 
   file_seek (file, ofs);
   while (read_bytes > 0 || zero_bytes > 0) 
     {
@@ -578,8 +596,9 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
       ve1->offset = ofs;
       ve1->read_bytes = page_read_bytes; 
       ve1->zero_bytes = page_zero_bytes;
+      ve1->swap_slot = 9999; 
       insert_vme (&thread_current()->vm,ve1);     
-
+      
       /* Advance. */
       read_bytes -= page_read_bytes;
       zero_bytes -= page_zero_bytes;
@@ -595,19 +614,19 @@ static bool
 setup_stack (void **esp) 
 { 
   bool success = false;
+ lock_acquire(&alloc_lock);
   struct page * kpage = alloc_page(PAL_USER | PAL_ZERO);
-   
+  
   if (kpage != NULL) 
     {
    
       success = install_page (((uint8_t *) PHYS_BASE) - PGSIZE, kpage->kaddr, true);
-      
+       
       if (success)
         *esp = PHYS_BASE;
       else
         free_page(kpage->kaddr);
-    }
- 
+    } 
   struct vm_entry * ve1 = malloc(sizeof(struct vm_entry));
 
   ve1->type = VM_ANON;
@@ -615,9 +634,11 @@ setup_stack (void **esp)
   ve1->writable = true;
   ve1->is_loaded = true;
   kpage->vme = ve1;
-    
+  ve1->swap_slot = 9999;   
   insert_vme(&thread_current()->vm,ve1);
-  return success;
+  add_page_to_lru_list(kpage);
+ lock_release(&alloc_lock);
+ return success;
 }
 
 /* Adds a mapping from user virtual address UPAGE to kernel
@@ -632,7 +653,7 @@ setup_stack (void **esp)
 static bool
 install_page (void *upage, void *kpage, bool writable)
 {
-  struct thread *t = thread_current ();
+ struct thread *t = thread_current ();
 
   /* Verify that there's not already a page at that virtual
      address, then map our page there. */
@@ -642,17 +663,13 @@ install_page (void *upage, void *kpage, bool writable)
 
 bool handle_mm_fault(struct vm_entry *vme)
 {
-  
- bool success = false;
- struct page *kpage = alloc_page (PAL_USER); 
- 
- if(kpage == NULL)
-  { 
-    return false;
-  }
- 
+  bool success = false;
+  lock_acquire(&alloc_lock); 
+  struct page *kpage = alloc_page (PAL_USER); 
+  ASSERT(kpage !=NULL);  
   kpage->vme = vme; 
-   
+  add_page_to_lru_list(kpage);
+  
   switch(vme->type)
   {
     case VM_BIN:
@@ -668,24 +685,19 @@ bool handle_mm_fault(struct vm_entry *vme)
     success = true;
     break;
 
-
     default: 
-    
-    return false;  
-	       	
+    lock_release(&alloc_lock);
+    return false;  	       	
   }
-    
-
+  lock_release(&alloc_lock); 
   if(!success)
-  {    
-    return false;
-  }
- 
+   return false;
+
   if(!install_page(vme->vaddr,kpage->kaddr,vme->writable))
-    {       
-      return false;
-    }
- 
+   return false;
+
+  if(success)
+    vme->is_loaded = true; 
    return success;
 }
 
@@ -693,61 +705,79 @@ bool handle_mm_fault(struct vm_entry *vme)
 
 void do_munmap(struct mmap_file * mmap_file)
 {
+  
   struct thread * cur = thread_current();
   struct mmap_file * mf1 = mmap_file;
   struct vm_entry * ve1;
   struct list_elem * me1;
-  
    while(!list_empty(&mf1->vme_list))
      {
        me1 = list_pop_front(&mf1->vme_list);
      
        ve1 = list_entry(me1,struct vm_entry,mmap_elem);
            
-      if(ve1->is_loaded)
+      if(ve1->is_loaded==true)
       {
-        void * kaddr = pagedir_get_page(cur->pagedir,ve1->vaddr);
-        if(pagedir_is_dirty(cur->pagedir,ve1->vaddr))
-        {  
+          if(pagedir_is_dirty(cur->pagedir,ve1->vaddr))
+        {
            lock_acquire(&filesys_lock);
            file_write_at(ve1->file, ve1->vaddr,ve1->read_bytes,ve1->offset);
            lock_release(&filesys_lock);
         }
-        free_page(kaddr);        
+        
+        free_page_vme(ve1);  
+        ve1->is_loaded = false;      
       }
-      delete_vme(&thread_current()->vm,ve1);
+      delete_vme(&cur->vm,ve1);
      } 
   
  struct file * f1 = mf1->file;
- free(mf1);
  file_close(f1);
-}
+ free(mf1);
+ }
 
 bool expand_stack(void *addr)
 {
   bool success = false;
- 
+lock_acquire(&alloc_lock);
   addr = pg_round_down(addr);
 
+  while(!find_vme(addr))
+{ 
+ 
+  success = false;
+  
   struct page * kpage = alloc_page(PAL_USER | PAL_ZERO);
-
+ 
   struct vm_entry * ve1 = malloc(sizeof(struct vm_entry));
 
   ve1->type = VM_ANON;
   ve1->vaddr = addr;
   ve1->writable = true;
   ve1->is_loaded = true;
+  ve1->swap_slot = 9999;
   kpage->vme = ve1;
+  insert_vme(&thread_current()->vm,ve1);
 
   if (kpage != NULL)
     {
       success = install_page (addr, kpage->kaddr, true);
 
       if (!success)
-        free_page(kpage->kaddr);
+        { 
+          free_page_vme(ve1);
+        }
+      add_page_to_lru_list(kpage);
     }
+ 
+  
+  addr = addr+PGSIZE;
+  
+ 
+}
+lock_release(&alloc_lock);
 
-  insert_vme(&thread_current()->vm,ve1);
   return success;                                 
+
 }
 

@@ -15,7 +15,7 @@
 #include "threads/thread.h"
 #include "threads/vaddr.h"
 #include "threads/malloc.h"
-
+#include "vm/swap.h"
 
 #define VM_BIN 0
 #define VM_FILE 1

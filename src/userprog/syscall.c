@@ -17,17 +17,28 @@ struct file
     bool deny_write;            /* Has file_deny_write() been called? */
   };
 
+struct dir
+  { 
+    struct inode *inode;                /* Backing store. */
+    off_t pos;                          /* Current position. */
+  };
+
+
 struct lock filesys_lock;
+struct lock alloc_lock;
+struct lock swap_lock;
 typedef int pid_t;
 #define PID_ERROR ((pid_t) -1)
 typedef int mapid_t;
 #define MAP_FAILED ((mapid_t) -1);
+#define READDIR_MAX_LEN 14
 static void syscall_handler (struct intr_frame *f);
 struct vm_entry * check_address(void *addr,void *esp /*Unused*/);
 void check_valid_buffer (void* buffer, unsigned size, void *esp, bool to_write);
 void check_valid_string (const void *str, void * esp);
 static mapid_t allocate_mapid (void);
 
+//userprocess project에서 구현한 system call들입니다.
 void halt (void); 
 void exit (int status);
 pid_t exec (const char *file);
@@ -41,8 +52,17 @@ int write (int fd, void *buffer, unsigned size);
 void seek (int fd, unsigned position);
 unsigned tell (int fd);
 void close (int fd);
+
+//vm project에서 구현한 system call입니다.
 mapid_t mmap (int fd, void *addr);
 void munmap (mapid_t mapid);
+
+//filesystem project에서 구현한 system call들입니다.
+bool chdir (const char *dir);
+bool mkdir (const char *dir);
+bool readdir (int fd, char name[READDIR_MAX_LEN + 1]);
+bool isdir (int fd);
+int inumber (int fd);
 
 void
 syscall_init (void) 
@@ -50,6 +70,8 @@ syscall_init (void)
  
   intr_register_int (0x30, 3, INTR_ON, syscall_handler, "syscall");
   lock_init(&filesys_lock);
+  lock_init(&alloc_lock);
+  lock_init(&swap_lock);
 
 }
 
@@ -75,69 +97,69 @@ syscall_handler (struct intr_frame *f)
    
     case SYS_EXEC:
     check_address((void*)*(p1+1),(void*)p1);
-    check_address((void*)p1+1,(void*)p1);
+    check_address((void*)(p1+1),(void*)p1);
     f->eax=exec((const char*)*(p1+1));    
     break;
   
     case SYS_WAIT:
-    check_address((void*)p1+1,(void*)p1);
+    check_address((void*)(p1+1),(void*)p1);
     f->eax=wait((pid_t)*(p1+1));
     break;
 
     case SYS_CREATE:
-    check_address((void*)p1+1,(void*)p1);
-    check_address((void*)p1+2,(void*)p1);
+    check_address((void*)(p1+1),(void*)p1);
+    check_address((void*)(p1+2),(void*)p1);
     check_address((void*)*(p1+1),(void*)p1);
     f->eax=create((const char*)*(p1+1),(unsigned)*(p1+2));
     break;
 
     case SYS_REMOVE:
-    check_address((void*)p1+1,(void*)p1);
+    check_address((void*)(p1+1),(void*)p1);
     check_address((void*)*(p1+1),(void*)p1);
     f->eax=remove((const char*)*(p1+1));
     break;
 
     case SYS_OPEN:
-    check_address((void*)p1+1,(void*)p1);
+    check_address((void*)(p1+1),(void*)p1);
     check_address((void*)*(p1+1),(void*)p1);
     f->eax=open((const char*)*(p1+1));
     break;
 
     case SYS_FILESIZE:
-    check_address((void*)p1+1,(void*)p1);
+    check_address((void*)(p1+1),(void*)p1);
     f->eax=filesize(*(p1+1));
     break;
 
     case SYS_READ:
-    check_address((void*)p1+1,(void*)p1);
-    check_address((void*)p1+2,(void*)p1);
+    check_address((void*)(p1+1),(void*)p1);
+    check_address((void*)(p1+2),(void*)p1);
     check_valid_buffer((void*)*(p1+2),*(p1+3),(void*)p1,true);
-    check_address((void*)p1+3,(void*)p1);
+    check_address((void*)(p1+3),(void*)p1);
     f->eax=read(*(p1+1),(void*)*(p1+2),(unsigned)*(p1+3));
     break;
 
     case SYS_WRITE:
-    check_address((void*)p1+1,(void*)p1);
-    check_address((void*)p1+2,(void*)p1);
+    check_address((void*)(p1+1),(void*)p1);
+    check_address((void*)(p1+2),(void*)p1);
     check_valid_string((void*)*(p1+2),(void*)p1);
-    check_address((void*)p1+3,(void*)p1);
+    check_address((void*)(p1+3),(void*)p1);
     f->eax=write(*(p1+1),(void*)*(p1+2),(unsigned)*(p1+3));
     break;
 
     case SYS_SEEK:
-    check_address((void*)p1+1,(void*)p1);
-    check_address((void*)p1+2,(void*)p1);
+    check_address((void*)(p1+1),(void*)p1);
+    check_address((void*)(p1+2),(void*)p1);
     seek(*(p1+1),(unsigned)*(p1+2));
     break;
 
 
     case SYS_TELL:
-    check_address((void*)p1+1,(void*)p1);
+    check_address((void*)(p1+1),(void*)p1);
     f->eax=tell(*(p1+1));
     break;
 
     case SYS_CLOSE:
-    check_address((void*)p1+1,(void*)p1);
+    check_address((void*)(p1+1),(void*)p1);
     close(*(p1+1));
     break;
 
@@ -148,7 +170,26 @@ syscall_handler (struct intr_frame *f)
     case SYS_MUNMAP:
     munmap((mapid_t)*(p1+1));
     break;
+    
+    case SYS_CHDIR:
+    f->eax = chdir ((const char*)*(p1+1)); 
+    break;
+    
+    case SYS_MKDIR:
+    f->eax = mkdir ((const char*)*(p1+1));
+    break;
 
+    case SYS_READDIR:
+    f->eax = readdir(*(p1+1),(char*)*(p1+2));
+    break;
+  
+    case SYS_ISDIR:
+    f->eax = isdir(*(p1+1));
+    break;
+
+    case SYS_INUMBER:
+    f->eax = inumber(*(p1+1));
+    break;    
 
     default :
      exit(-1);
@@ -157,26 +198,22 @@ syscall_handler (struct intr_frame *f)
 
 struct vm_entry * check_address(void *addr,void *esp /*Unused*/)
 { 
-  if(addr<(void*)0x08048000||addr>=(void *)0xc0000000)  
- {  
+ if(addr<=(void*)0x08048000||addr>=(void *)0xc0000000)  
     exit(-1); 
- }
-
  struct vm_entry * e1 = find_vme(addr);
- 
  if(e1 == NULL)
- { 
   exit(-1);
- }
  return e1;
 }
 
 void check_valid_buffer (void* buffer, unsigned size, void * esp, bool to_write)
-{  
+{ 
+  
   if(buffer==NULL)
   exit(-1);
-  struct vm_entry * ve1 = check_address(buffer,esp);
 
+  struct vm_entry * ve1 = check_address(buffer,esp);
+  
   if(ve1 == NULL || ve1->writable != true)
   exit(-1);
 
@@ -196,7 +233,9 @@ void check_valid_string (const void *str, void * esp)
 {
   struct vm_entry * ve1 =  check_address(str,esp);
   if(ve1==NULL)
+ {
   exit(-1);
+ }
 }
 
 void halt (void)
@@ -206,7 +245,7 @@ void halt (void)
 
 
 void exit (int status)
-{
+{ 
  struct thread * t1 = thread_current();
  t1->exit_status = status;
  printf("%s: exit(%d)\n",t1->name,status);
@@ -215,7 +254,7 @@ void exit (int status)
 
 pid_t exec (const char *file)
 {
- 
+  
  pid_t child_pid;
 
  child_pid = process_execute(file);
@@ -242,7 +281,9 @@ create (const char * file, unsigned initial_size)
   
   if(file==NULL)
   exit(-1);   
- 
+  
+  if(strlen(file)>100)
+  return false;
   return (filesys_create(file, initial_size));
 }
 
@@ -260,7 +301,6 @@ int open(const char * file)
  if(file==NULL)
  return -1;
 
- 
  lock_acquire(&filesys_lock); 
  struct file *f1 = filesys_open(file);
  lock_release(&filesys_lock);
@@ -281,7 +321,7 @@ int filesize(int fd)
 
 int read(int fd, void * buffer, unsigned size)
 {
- 
+  
  int i;
  lock_acquire(&filesys_lock); 
  if(fd==0)
@@ -315,8 +355,7 @@ int read(int fd, void * buffer, unsigned size)
 }
 
 int write(int fd, void * buffer, unsigned size)
-{
-   
+{  
    lock_acquire(&filesys_lock); 
   if(fd==1)
   {  
@@ -336,7 +375,11 @@ int write(int fd, void * buffer, unsigned size)
      lock_release(&filesys_lock);
      return -1;
     }
-   
+   if(inode_is_dir(f1->inode))
+   {
+    lock_release(&filesys_lock);
+    return -1;
+   } 
    size = file_write(f1,buffer,size);
    lock_release(&filesys_lock);
    return size;
@@ -413,12 +456,13 @@ mapid_t mmap (int fd, void *addr)
  struct vm_entry * ve1 = malloc(sizeof(struct vm_entry));
  ve1->type = VM_FILE;
  ve1->vaddr = addr;
- ve1->writable = true;
+ ve1->writable = (!f1->deny_write);
  ve1->is_loaded = false;
  ve1->file = f1;
  ve1->offset = ofs;
  ve1->read_bytes = page_read_bytes;
  ve1->zero_bytes = page_zero_bytes;
+ ve1->swap_slot = 9999;
  insert_vme (&thread_current()->vm,ve1);
  list_push_back(&mf1->vme_list,&ve1->mmap_elem);
 
@@ -461,5 +505,97 @@ static mapid_t allocate_mapid (void)
  mapid_t mapid = next_mapid;
 
  return mapid;
+}
+
+//현재 thread의 cur_dir를 전환합니다.
+bool chdir (const char *dir)
+{
+  char * file_name = malloc(sizeof(char)*15);
+
+  struct dir * real_dir =  parse_path(dir,file_name);
+
+  struct inode * inode = NULL;
+ 
+  dir_lookup(real_dir,file_name,&inode);
+  
+  dir_close(real_dir);
+  
+  real_dir = dir_open(inode); 
+  
+  if(real_dir == NULL)
+  {
+   free(file_name);
+   return false; 
+  }
+  
+  if(thread_current()->cur_dir !=NULL)
+  dir_close(thread_current()->cur_dir);
+  
+  //이곳에서 directory를 전환합니다.
+  thread_current()->cur_dir=real_dir;
+
+  free(file_name);
+
+  return true;  
+}
+
+//새로운 directory를 생성합니다. 
+bool mkdir (const char *dir)
+{
+  return filesys_create_dir(dir);
+}
+
+//directory를 읽어서아무것도 없으면 false를, 파일이 존재하면 true를 return합니다.
+bool readdir (int fd, char name[READDIR_MAX_LEN + 1])
+{
+  bool success = false;
+
+  struct file * f1 = process_get_file(fd);
+  
+  if(f1 == NULL)
+  return false;
+
+  if(!inode_is_dir(f1->inode))
+  return false;
+  
+  inode_reopen(f1->inode); 
+
+  struct dir * p_file = dir_open(f1->inode);
+
+  if(p_file == NULL)
+  { 
+    inode_close(f1->inode);
+    return false; 
+  }
+
+  p_file->pos = f1->pos;
+
+  //.과 ..은 모든 directory안에 존재하기 때문에 그것을 제외하고 생각합니다.
+  do
+  {
+    success = dir_readdir(p_file,name); 
+  }
+  while((success)&&(!strcmp(name,".")||!strcmp(name,"..")));
+
+  f1->pos = p_file->pos;
+
+  dir_close(p_file);
+  return success;
+}
+
+//주어진 fd 파일의 disk inode가 저장된 sector를 확인하는 system call함수입니다.
+int inumber (int fd)
+{
+ struct file * f1 = process_get_file(fd);
+ return inode_get_inumber(f1->inode);
+
+}
+
+//주어진 fd가 directory인지 확인하는 system call함수입니다.
+bool isdir (int fd)
+{
+   struct file * f1 = process_get_file(fd);
+   bool result = inode_is_dir(f1->inode);
+   return result;  
 }
 

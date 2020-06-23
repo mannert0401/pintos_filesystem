@@ -14,9 +14,7 @@
 #include "threads/thread.h"
 #include "threads/vaddr.h"
 #include "threads/malloc.h"
-#include "vm/page.h"
-
-
+#include "vm/frame.h"
 
 void vm_init (struct hash *vm)
 {
@@ -59,14 +57,13 @@ bool delete_vme (struct hash *vm, struct vm_entry *vme)
 {
  struct hash_elem * e1 = hash_delete(vm,&vme->elem);
   
- if(e1 == NULL)
- return false;
+ ASSERT(e1 !=NULL);
 
- else
- {
+ if(vme->is_loaded == true)
+ free_page_vme(vme);
  free(vme);
  return true;
- }
+ 
 } 
 
 struct vm_entry * find_vme (void * vaddr)
@@ -89,12 +86,23 @@ void vm_destroy (struct hash *vm)
 static void vm_destroy_func(struct hash_elem *e, void *aux UNUSED)
 {
   struct vm_entry * e1 = hash_entry(e,struct vm_entry,elem);
+ 
+  if(e1==NULL)
+  return;
+
+  if(e1->type==VM_ANON&&e1->swap_slot!=9999)
+  swap_delete(e1->swap_slot);
+  
+  if(e1->is_loaded==true)
+  {
+    free_page_vme(e1);
+  }
   free(e1);
 }
 
 bool load_file (void * kaddr, struct vm_entry *vme)
 {
-  
+   
   if((size_t)file_read_at (vme->file,kaddr,vme->read_bytes,vme->offset) != vme->read_bytes)
  {
   return false;

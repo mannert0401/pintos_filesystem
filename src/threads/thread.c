@@ -94,12 +94,13 @@ thread_init (void)
   lock_init (&tid_lock);
   list_init (&ready_list);
   list_init (&all_list);
-
+  
   /* Set up a thread structure for the running thread. */
   initial_thread = running_thread ();
   init_thread (initial_thread, "main", PRI_DEFAULT);
   initial_thread->status = THREAD_RUNNING;
   initial_thread->tid = allocate_tid ();
+  initial_thread->cur_dir = NULL;
 }
 
 /* Starts preemptive thread scheduling by enabling interrupts.
@@ -185,9 +186,14 @@ thread_create (const char *name, int priority,
   /* Initialize thread. */
   init_thread (t, name, priority);
   tid = t->tid = allocate_tid ();
-  
+  if(thread_current()->cur_dir != NULL)
+  {
+   t->cur_dir = dir_reopen(thread_current()->cur_dir);
+  }  
 
-  t->next_fd = 2;
+  int i;
+  for(i=2; i<128; i++)
+  t->bm_fdt[i] = false;
 
   t->parent = thread_current();
   list_push_back(&thread_current()->child,&t->child_elem);
